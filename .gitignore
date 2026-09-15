@@ -1,0 +1,11 @@
+# локальные данные — на сервере они всё равно не переживут перезапуск
+jobs.db
+settings.json
+.streamlit/secrets.toml
+
+# окружение и мусор
+.venv/
+__pycache__/
+*.py[cod]
+*.bak
+.DS_Store
