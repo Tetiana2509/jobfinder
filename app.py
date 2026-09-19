@@ -14,11 +14,50 @@ import storage
 
 st.set_page_config(page_title="Job Finder", page_icon="🔎", layout="wide")
 storage.init()
-S = storage.load_settings()
 
 STATUS = {"neu": "Новая", "gemerkt": "⭐ Избранное", "beworben": "✅ Отклик отправлен", "ausgeblendet": "Скрыта"}
 MODES = {"office": "Офис", "remote": "Удалённо (вся Германия)", "both": "Офис + удалённо"}
 ANGEBOT = {1: "Работа", 34: "Praktikum / Trainee", 4: "Ausbildung / Duales Studium"}
+PICK_BY_HAND = "— ввести имя —"
+
+
+# ================================================================ who is this
+def enter_as(name):
+    st.session_state["user"] = name
+    st.query_params["user"] = name  # so a refresh does not throw you back to the login screen
+    st.rerun()
+
+
+def login_screen():
+    st.title("🔎 Job Finder")
+    st.caption("Список вакансий общий, а избранное, отклики и заметки — у каждого свои. "
+               "Пароля нет: имя только разделяет списки, но не защищает их.")
+    known = storage.list_users()
+    if known:
+        pick = st.selectbox("Кто ты?", [PICK_BY_HAND, *known])
+        if pick != PICK_BY_HAND and st.button(f"Войти как {pick}", type="primary", width="stretch"):
+            enter_as(pick)
+
+    typed = st.text_input("Имя", placeholder="например, Таня").strip()
+    if typed:
+        existing = storage.find_user(typed)
+        if existing:
+            st.success(f"Есть такой: **{existing}**.")
+            if st.button(f"Войти как {existing}", type="primary", key="enter_typed", width="stretch"):
+                enter_as(existing)
+        else:
+            st.info(f"Пользователя «{typed}» ещё нет.")
+            if st.button(f"Создать «{typed}»", type="primary", key="make_new", width="stretch"):
+                enter_as(storage.create_user(typed))
+    st.stop()
+
+
+user = st.session_state.get("user") or storage.find_user(st.query_params.get("user", ""))
+if not user:
+    login_screen()
+st.session_state["user"] = user
+storage.touch_user(user)
+S = storage.load_settings(user)
 
 st.markdown("""
 <style>
@@ -30,6 +69,13 @@ st.markdown("""
 
 # ================================================================ sidebar: search settings
 with st.sidebar:
+    who, out = st.columns([2, 1], vertical_alignment="bottom")
+    who.caption(f"Ты вошла как **{user}**")
+    if out.button("Выйти", width="stretch"):
+        st.session_state.pop("user", None)
+        st.query_params.clear()
+        st.rerun()
+
     st.header("Поиск")
     kw_text = st.text_area("Ключевые слова (по одному в строке)", "\n".join(S["keywords"]), height=170)
     # a multiselect, not a text area: st.text_area only commits on blur or Ctrl+Enter,
@@ -90,7 +136,7 @@ if run:
            "use_ba": use_ba, "use_an": use_an, "use_ad": use_ad, "adzuna_app_id": ad_id, "adzuna_app_key": ad_key,
            "use_rv": use_rv, "use_jy": use_jy, "use_rok": use_rok, "remote_eu_only": remote_eu_only,
            "my_languages": my_languages, "keep_unclear_languages": keep_unclear}
-    storage.save_settings(cfg)
+    storage.save_settings(user, cfg)
 
     found, errors = {}, []
     with st.status("Ищу вакансии…", expanded=True) as status:
@@ -154,7 +200,7 @@ if run:
         st.warning(e)
 
 # ================================================================ list filters
-jobs = storage.load_jobs()
+jobs = storage.load_jobs(user)
 if not jobs:
     st.info("Пока пусто. Настрой фильтры слева и нажми «Искать».")
     st.stop()
@@ -274,7 +320,7 @@ with right:
                (b3, "ausgeblendet", "Скрыть"), (b4, "neu", "Сбросить")]
     for col, new_status, label in actions:
         if col.button(label, key=f"{new_status}_{job['id']}", disabled=job["status"] == new_status, width="stretch"):
-            storage.set_status(job["id"], new_status)
+            storage.set_status(user, job["id"], new_status)
             st.rerun()
 
     st.link_button("Открыть объявление", job["url"], width="stretch")
@@ -282,7 +328,7 @@ with right:
     note = st.text_area("Заметка", job["note"] or "", key=f"note_{job['id']}", height=70,
                         placeholder="Контакт, дата отклика, впечатления…")
     if note != (job["note"] or ""):
-        storage.set_note(job["id"], note)
+        storage.set_note(user, job["id"], note)
 
     desc = job["description"]
     if desc is None and job["source"] == "Arbeitsagentur":

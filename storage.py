@@ -63,6 +63,15 @@ def init():
         for name, kind in (("employment", "TEXT"), ("hours_min", "REAL"), ("hours_max", "REAL")):
             if name not in columns:  # added when weekly-hours filtering arrived
                 c.execute(f"ALTER TABLE jobs ADD COLUMN {name} {kind}")
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                name TEXT PRIMARY KEY, created TEXT, last_seen TEXT, settings TEXT
+            )""")
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS user_jobs (
+                user TEXT, job_id TEXT, status TEXT DEFAULT 'neu', note TEXT DEFAULT '',
+                PRIMARY KEY (user, job_id)
+            )""")
         # ads stored before that column existed still have their text, so read the levels off it
         stale = c.execute("SELECT id, title, description FROM jobs "
                           "WHERE languages IS NULL OR employment IS NULL").fetchall()
@@ -126,19 +135,81 @@ def set_description(job_id, text):
              json.dumps(levels, ensure_ascii=False), ",".join(codes), low, high, job_id))
 
 
-def set_status(job_id, status):
+# ---------------------------------------------------------------- accounts
+# A name, no password: this separates people's lists, it does not protect them.
+# Anyone who types someone else's name gets that person's list.
+def list_users():
     with _conn() as c:
-        c.execute("UPDATE jobs SET status=? WHERE id=?", (status, job_id))
+        return [r["name"] for r in c.execute("SELECT name FROM users ORDER BY lower(name)")]
 
 
-def set_note(job_id, note):
+def find_user(name):
+    """Case-insensitive lookup, so "Таня" and "таня" are the same person. Compared in
+    Python, not SQL: SQLite's own lower() only folds ASCII and leaves Cyrillic alone.
+    Returns the spelling stored at sign-up, or None."""
+    name = (name or "").strip().casefold()
+    if not name:
+        return None
     with _conn() as c:
-        c.execute("UPDATE jobs SET note=? WHERE id=?", (note, job_id))
+        rows = c.execute("SELECT name FROM users").fetchall()
+    return next((r["name"] for r in rows if r["name"].casefold() == name), None)
 
 
-def load_jobs():
+def create_user(name):
+    name = (name or "").strip()
+    existing = find_user(name)
+    if existing:  # a second "таня" must land in Таня's list, not start an empty one
+        return existing
+    today = date.today().isoformat()
     with _conn() as c:
-        rows = c.execute("SELECT * FROM jobs ORDER BY published DESC, first_seen DESC").fetchall()
+        first = c.execute("SELECT COUNT(*) AS n FROM users").fetchone()["n"] == 0
+        c.execute("INSERT INTO users (name, created, last_seen, settings) VALUES (?, ?, ?, ?)",
+                  (name, today, today, json.dumps(DEFAULT_SETTINGS, ensure_ascii=False)))
+        if first:
+            # stars and notes made before accounts existed belong to whoever sets up first
+            c.execute("""
+                INSERT OR IGNORE INTO user_jobs (user, job_id, status, note)
+                SELECT ?, id, COALESCE(status, 'neu'), COALESCE(note, '') FROM jobs
+                WHERE (status IS NOT NULL AND status != 'neu') OR (note IS NOT NULL AND note != '')
+            """, (name,))
+            if SETTINGS_PATH.exists():
+                try:
+                    c.execute("UPDATE users SET settings=? WHERE name=?",
+                              (SETTINGS_PATH.read_text(encoding="utf-8"), name))
+                except OSError:
+                    pass
+    return name
+
+
+def touch_user(name):
+    with _conn() as c:
+        c.execute("UPDATE users SET last_seen=? WHERE name=?", (date.today().isoformat(), name))
+
+
+def set_status(user, job_id, status):
+    with _conn() as c:
+        c.execute("""INSERT INTO user_jobs (user, job_id, status) VALUES (?, ?, ?)
+                     ON CONFLICT(user, job_id) DO UPDATE SET status=excluded.status""",
+                  (user, job_id, status))
+
+
+def set_note(user, job_id, note):
+    with _conn() as c:
+        c.execute("""INSERT INTO user_jobs (user, job_id, note) VALUES (?, ?, ?)
+                     ON CONFLICT(user, job_id) DO UPDATE SET note=excluded.note""",
+                  (user, job_id, note))
+
+
+def load_jobs(user):
+    """The ads are shared; the status and the note come from this user's own rows."""
+    columns = ", ".join(f"jobs.{col}" for col in _COLUMNS)
+    with _conn() as c:
+        rows = c.execute(f"""
+            SELECT {columns},
+                   COALESCE(uj.status, 'neu') AS status,
+                   COALESCE(uj.note, '') AS note
+            FROM jobs LEFT JOIN user_jobs uj ON uj.job_id = jobs.id AND uj.user = ?
+            ORDER BY jobs.published DESC, jobs.first_seen DESC""", (user,)).fetchall()
     jobs = []
     for r in rows:
         job = dict(r)
@@ -151,14 +222,19 @@ def load_jobs():
     return jobs
 
 
-def load_settings():
-    if SETTINGS_PATH.exists():
-        try:
-            return {**DEFAULT_SETTINGS, **json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))}
-        except json.JSONDecodeError:
-            pass
+def load_settings(user=None):
+    if user:
+        with _conn() as c:
+            row = c.execute("SELECT settings FROM users WHERE name=?", (user,)).fetchone()
+        if row and row["settings"]:
+            try:
+                return {**DEFAULT_SETTINGS, **json.loads(row["settings"])}
+            except json.JSONDecodeError:
+                pass
     return dict(DEFAULT_SETTINGS)
 
 
-def save_settings(settings):
-    SETTINGS_PATH.write_text(json.dumps(settings, ensure_ascii=False, indent=2), encoding="utf-8")
+def save_settings(user, settings):
+    with _conn() as c:
+        c.execute("UPDATE users SET settings=? WHERE name=?",
+                  (json.dumps(settings, ensure_ascii=False), user))
