@@ -18,8 +18,6 @@ storage.init()
 STATUS = {"neu": "Новая", "gemerkt": "⭐ Избранное", "beworben": "✅ Отклик отправлен", "ausgeblendet": "Скрыта"}
 MODES = {"office": "Офис", "remote": "Удалённо (вся Германия)", "both": "Офис + удалённо"}
 ANGEBOT = {1: "Работа", 34: "Praktikum / Trainee", 4: "Ausbildung / Duales Studium"}
-PICK_BY_HAND = "— ввести имя —"
-
 
 # ================================================================ who is this
 def enter_as(name):
@@ -32,12 +30,6 @@ def login_screen():
     st.title("🔎 Job Finder")
     st.caption("Список вакансий общий, а избранное, отклики и заметки — у каждого свои. "
                "Пароля нет: имя только разделяет списки, но не защищает их.")
-    known = storage.list_users()
-    if known:
-        pick = st.selectbox("Кто ты?", [PICK_BY_HAND, *known])
-        if pick != PICK_BY_HAND and st.button(f"Войти как {pick}", type="primary", width="stretch"):
-            enter_as(pick)
-
     typed = st.text_input("Имя", placeholder="например, Таня").strip()
     if typed:
         existing = storage.find_user(typed)
