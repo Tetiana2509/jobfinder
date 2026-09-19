@@ -30,17 +30,28 @@ def login_screen():
     st.title("🔎 Job Finder")
     st.caption("Список вакансий общий, а избранное, отклики и заметки — у каждого свои. "
                "Пароля нет: имя только разделяет списки, но не защищает их.")
-    typed = st.text_input("Имя", placeholder="например, Таня").strip()
-    if typed:
-        existing = storage.find_user(typed)
-        if existing:
-            st.success(f"Есть такой: **{existing}**.")
-            if st.button(f"Войти как {existing}", type="primary", key="enter_typed", width="stretch"):
-                enter_as(existing)
+    with st.form("login"):
+        typed = st.text_input("Имя", placeholder="например, Таня")
+        go = st.form_submit_button("Войти", type="primary", width="stretch")
+    if go:
+        name = typed.strip()
+        if not name:
+            st.warning("Введи имя.")
+        elif existing := storage.find_user(name):
+            enter_as(existing)  # a name we know just goes in; the screen never announces who exists
         else:
-            st.info(f"Пользователя «{typed}» ещё нет.")
-            if st.button(f"Создать «{typed}»", type="primary", key="make_new", width="stretch"):
-                enter_as(storage.create_user(typed))
+            st.session_state["pending"] = name
+
+    pending = st.session_state.get("pending")
+    if pending:
+        st.info(f"Аккаунта «{pending}» ещё нет. Создать новый — или ты ввела имя с опечаткой?")
+        make, retry = st.columns(2)
+        if make.button(f"Создать «{pending}»", type="primary", width="stretch"):
+            st.session_state.pop("pending", None)
+            enter_as(storage.create_user(pending))
+        if retry.button("Ввести другое имя", width="stretch"):
+            st.session_state.pop("pending", None)
+            st.rerun()
     st.stop()
 
 
